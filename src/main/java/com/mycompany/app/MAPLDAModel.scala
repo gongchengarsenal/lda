@@ -5,11 +5,13 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.graphx._
 
 import scala.collection.mutable
-import scala.util.Random
 
 
-class MAPLDAModel {
-
+class MAPLDAModel (
+  docTopic: Array[DenseVector[Double]],
+  topicWord: Array[Array[String]]
+) {
+  def getTopicWord = topicWord
 }
 
 
@@ -34,7 +36,7 @@ object MAPLDAModel {
     for (_ <- 1 to conf.maxIter) {
       val sendMsg: EdgeContext[DenseVector[Double], Short, DenseVector[Double]] => Unit = {
         context => {
-          val (w, k) = (conf.nTerm, conf.nTopic)
+          val (w, k) = (vocab.size, conf.nTopic)
           val (alpha, beta) = (conf.alpha, conf.beta)
 
           val ndw = context.attr
@@ -63,13 +65,33 @@ object MAPLDAModel {
         .fold(DenseVector.zeros[Double](conf.nTopic))(_ :+ _)
     }
 
-    vertexes.filter(_._1 <= 0).sor
-    new MAPLDAModel
+    val docTopic: Array[DenseVector[Double]] = vertexes.filter(_._1 <= 0)
+      .collect().sortWith((v1, v2) => v1._1 > v2._1).map(_._2)
+      .map(vec => vec :/ sum(vec))
+
+    val topicWord: Array[Array[String]] = {
+      val inverVocab: Map[Int, String] = {
+        var v = Map.empty[Int, String]
+        vocab.foreach{ case(word, id) => v += (id -> word) }
+        v
+      }
+      val phiwk = vertexes.filter(_._1 > 0).collect()
+      Range(0, conf.nTopic).map(k =>
+        phiwk.sortWith((v1, v2) => v1._2(k) > v2._2(k)).take(20).map(v => inverVocab(v._1.toInt))
+      ).toArray
+    }
+
+    edges.unpersist()
+    while (vertexQueue.nonEmpty) {
+      vertexQueue.dequeue().unpersist()
+    }
+
+    new MAPLDAModel(docTopic, topicWord)
   }
 
   def getEdges(rawCorp: RDD[String], vocab: Map[String, Int]): RDD[Edge[Short]] = {
     rawCorp.zipWithIndex().flatMap { case(line, id) =>
-      Util.segment(line).map { case(term, cnt) => Edge(vocab(term), -id, cnt)}
+      Util.segment(line).filter(t => vocab.contains(t._1)).map { case(term, cnt) => Edge(vocab(term), -id, cnt.toShort) }
     }
   }
 
